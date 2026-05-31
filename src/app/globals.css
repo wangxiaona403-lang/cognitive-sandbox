@@ -10,7 +10,7 @@
   -webkit-overflow-scrolling: touch;
 }
 
-/* 隐藏滚动条（关联词横向滑动） */
+/* 隐藏滚动条 */
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -26,4 +26,25 @@
   --tw-prose-bold: #fafafa;
   --tw-prose-links: #fbbf24;
   --tw-prose-quotes: #a1a1aa;
+}
+
+/* 搜索下拉 / 种子浏览器背景 */
+.bg-zinc-850 {
+  background-color: #1a1a1e;
+}
+
+/* 动画 */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slide-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fade-in 200ms ease-out;
+}
+.animate-slide-up {
+  animation: slide-up 300ms ease-out;
 }

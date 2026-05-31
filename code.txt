@@ -1,0 +1,302 @@
+# 🧠 “思维沙盘 (Cognitive Sandbox)” 全栈技术架构与开发指引文档
+
+本文档专为 **Next.js (App Router) + Tailwind CSS + Prisma + Supabase** 技术栈量身定制，旨在为 **Claude Code** 提供免调试、可直接执行的工程级全栈脚手架与业务逻辑闭环规范。
+
+---
+
+## 一、 项目定位与技术选型
+
+### 1. 核心定位
+
+一款面向移动端（Mobile-First）设计的沉浸式深度思考工具。通过高概念词汇的激荡与解构，强制打破用户的认知惰性。
+
+### 2. 技术栈清单
+
+* **研发框架**：Next.js 15+ (App Router, TypeScript)
+* **样式库**：Tailwind CSS (响应式、Dark Mode 优先)
+* **数据库 ORM**：Prisma Client
+* **云数据库**：Supabase (PostgreSQL 免费版)
+* **大模型流式框架**：Vercel AI SDK (`ai`, `@ai-sdk/openai`)
+* **离线应用支持**：`next-pwa` (支持无边框添加到手机主屏幕)
+
+---
+
+## 二、 数据库建模 (`prisma/schema.prisma`)
+
+设计核心为“概念表”与“笔记表”的 **一对一 (1:1) 强关联**。确保历史检索秒开，且支持级联删除。
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 概念解构核心表
+model Concept {
+  id           String   @id @default(uuid())
+  word         String   @unique                  // 词汇名称（建立唯一索引，用于快速检索与去重）
+  fullMarkdown String   @db.Text                 // 大模型生成的完整 8 模块解构 Markdown 文本
+  relatedWords String   @default("")             // 底部关联推荐词，存储为逗号分隔的字符串（如 "达克效应,自我设限"）
+  createdAt    DateTime @default(now())
+  note         Note?                             // 一对一关联的个人思维笔记
+}
+
+// 个人随笔沙盘表
+model Note {
+  id        String   @id @default(uuid())
+  content   String   @db.Text                   // 个人思想沉淀内容
+  conceptId String   @unique                    // 外键约束
+  concept   Concept  @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+}
+
+```
+
+---
+
+## 三、 基础设施与种子库配置
+
+### 1. 环境变量配置 (`.env.local`)
+
+```env
+# Supabase PostgreSQL 连接字符串
+DATABASE_URL="postgresql://postgres:[PASSWORD]@aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
+
+# 主力模型：智谱清言 (优先调用)
+ZHIPU_API_KEY="your_zhipu_api_key_here"
+ZHIPU_BASE_URL="https://open.bigmodel.cn/api/paas/v4"
+ZHIPU_MODEL="glm-4-flash"
+
+# 容灾备用模型：DeepSeek (降级保障)
+DEEPSEEK_API_KEY="your_deepseek_api_key_here"
+DEEPSEEK_BASE_URL="https://api.deepseek.com/v1"
+DEEPSEEK_MODEL="deepseek-chat"
+
+```
+
+### 2. 100个深度思考种子词仓 (`src/data/seeds.ts`)
+
+```typescript
+export const SEED_WORDS: string[] = [
+  "习得性无助", "达克效应", "自我觉醒", "皮格马利翁效应", "路径依赖", 
+  "幸存者偏差", "沉没成本谬误", "奥卡姆剃刀", "帕累托法则", "熵增定律",
+  "非线性思维", "认知闭合需求", "马太效应", "锚定效应", "克里斯坦森颠覆",
+  "心流体验", "罗森塔尔效应", "旁观者效应", "破窗效应", "墨菲定律",
+  // ... 此处可由 Claude Code 增补至 100 个涉及心理学、哲学、认知科学、系统论的高阶抽象词汇
+];
+
+```
+
+---
+
+## 四、 核心大模型提示词工程 (Prompt Integration)
+
+后端在组装请求时，将合并用户的核心解构提示词与系统的工程化结构补丁。
+
+### 1. 组合提示词架构
+
+系统发送给大模型的最终 `systemPrompt` 由两部分紧密拼接而成：
+
+> **第一部分：用户专属解构指令**
+> * **角色设定**：冷静、客观、极致耐心的"知识拆解专家" 。
+> * **核心目标**：向用户暴露提问底层的逻辑，输出可复用的"提问范式" 。
+> * **输出模块**：严格包含以下 8 个极度详尽的模块 ：
+> * **模块一：学术严谨定义**（学科溯源、专业定义、核心要素拆解） * **模块二：大白话解码**（一句话本质、逐句人话版） * **模块三：深度与广度透视**（深度向下挖掘、广度向外扩展） * **模块四：高维提问构建与思维发散**（生成 3 个跨维度问题并拆解构建机制） * **模块五：逻辑推演与思考留白**（推演路径、认知增量、抛出低门槛衍生问答） * **模块六：场景具象化**（聚焦创业者困境/普通人日常体感，剥离文艺修饰） * **模块七：常识还原与可复用范式提取**（常识挂钩、通用提问公式、跨领域示例） * **模块八：行动指南与实操落地**（具体执行步骤闭环、全局失效的风险边界） * **限制与风格**：绝对中立客观（禁止感叹号/情绪词），场景偏好创业/日常，步骤形成闭环 。
+> 
+> 
+> **第二部分：附加系统工程限制（由后端代码自动动态追加）**
+> ```text
+> 【工程化硬性补充限制】
+> 1. 你当前生成的词汇绝对不能包含在以下黑名单列表中：[${excludeWordsList}]。请务必返回一个全新的、不在列表中的高阶抽象思维/心理/哲学/跨学科词汇。
+> 2. 请严格执行上述【输出模块】的 8 个模块，使用标准的 Markdown 语法进行流式输出。
+> 3. 在完全生成并结束“模块八”的所有内容后，请空两行，并【严格】按照以下格式输出 3-5 个与当前主词汇高度相关的专业关联词（用于系统前端标签卡片的动态高亮渲染），不要附加任何多余的解释、前言或符号：
+> [RECOMMENDED_START]
+> 关联词A, 关联词B, 关联词C, 关联词D
+> [RECOMMENDED_END]
+> 
+> ```
+> 
+> 
+
+---
+
+## 五、 全栈核心业务 API 实现 (`app/api/think/route.ts`)
+
+该接口完美融合了“本地缓存秒开”**、**“冷启动种子过滤”**、**“智谱->DeepSeek 双模型无感容灾切换”**以及**“异步流结束拦截入库”四大核心技术。
+
+```typescript
+import { createOpenAI } from '@ai-sdk/openai';
+import { streamText } from 'ai';
+import { prisma } from '@/lib/prisma'; 
+import { SEED_WORDS } from '@/data/seeds';
+
+export const maxDuration = 60; // 调高超长时间线，保障长文本稳定输出
+
+export async function POST(req: Request) {
+  try {
+    const { word } = await req.json();
+
+    // 1. 【缓存优先策略】如果指定了词汇，先去 Supabase 数据库匹配
+    if (word) {
+      const cachedConcept = await prisma.concept.findUnique({
+        where: { word },
+        include: { note: true }
+      });
+      if (cachedConcept) {
+        return Response.json({ mode: 'cache', data: cachedConcept });
+      }
+    }
+
+    // 2. 【冷启动与去重引擎】拉取数据库已读词汇列表
+    const visitedConcepts = await prisma.concept.findMany({ select: { word: true } });
+    const visitedWords = visitedConcepts.map(c => c.word);
+
+    let targetWord = word;
+    
+    // 如果没有指定词汇，开启智能抽取流
+    if (!targetWord) {
+      const remainingSeeds = SEED_WORDS.filter(w => !visitedWords.includes(w));
+      if (remainingSeeds.length > 0) {
+        // 种子未耗尽，从剩余种子中随机抓取一个
+        targetWord = remainingSeeds[Math.floor(Math.random() * remainingSeeds.length)];
+      } else {
+        // 种子已耗尽，开启全网盲抠模式，由大模型自由发挥
+        targetWord = ""; 
+      }
+    }
+
+    const excludeWordsList = visitedWords.join(', ');
+
+    // 3. 【组装硬核提示词】(融入用户提供的8大模块限制)
+    [cite_start]const baseUserPrompt = `你是一位冷静、客观、极致耐心的"知识拆解专家"...(此处完整植入用户上传的8个模块完整文本)...`; [cite: 1]
+    
+    const engineeringPatch = `
+    【工程化硬性补充限制】
+    1. 你当前生成的词汇绝对不能包含在以下黑名单列表中：[${excludeWordsList}]。
+    2. 如果当前给定的主词汇为空，请你全网自主选择一个符合设定的全新词汇。
+    3. [cite_start]请严格执行上述【输出模块】的 8 个模块。 [cite: 1]
+    4. 结束“模块八”后，必须精确按照以下格式输出关联词：
+    [RECOMMENDED_START]
+    关联词1, 关联词2, 关联词3
+    [RECOMMENDED_END]`;
+
+    const finalSystemPrompt = `${baseUserPrompt}\n${engineeringPatch}`;
+
+    // 4. 【双模型故障无感转移控制逻辑】
+    let client;
+    let modelName;
+
+    try {
+      // 第一优先级：智谱 AI
+      client = createOpenAI({
+        apiKey: process.env.ZHIPU_API_KEY,
+        baseURL: process.env.ZHIPU_BASE_URL,
+      });
+      modelName = process.env.ZHIPU_MODEL || 'glm-4-flash';
+      
+      // 测试连接或直接建立流
+      return await executeLLMStream(client, modelName, finalSystemPrompt, targetWord);
+    } catch (zhipuError) {
+      console.warn('智谱 AI 服务不可用或超时，正在无缝切流至备份模型 DeepSeek...', zhipuError);
+      
+      // 第二优先级（故障降级）：DeepSeek
+      client = createOpenAI({
+        apiKey: process.env.DEEPSEEK_API_KEY,
+        baseURL: process.env.DEEPSEEK_BASE_URL,
+      });
+      modelName = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+      
+      return await executeLLMStream(client, modelName, finalSystemPrompt, targetWord);
+    }
+
+  } catch (globalError) {
+    console.error('全栈链路崩塌:', globalError);
+    return Response.json({ error: '系统核心服务异常' }, { status: 500 });
+  }
+}
+
+// 核心流处理与异步持久化函数
+async function executeLLMStream(client: any, model: string, systemPrompt: string, userWord: string) {
+  const result = await streamText({
+    model: client(model),
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userWord || '请刷新并盲抠下一个全新词汇。' }
+    ],
+    // 关键回调：当流式传输在手机端完全走完后，后台无感异步存入 Supabase
+    onFinish: async ({ text }) => {
+      try {
+        // 1. 利用正则表达式提取出隐藏在末尾的关联词
+        const recommendedRegex = /\[RECOMMENDED_START\]([\s\S]*?)\[RECOMMENDED_END\]/;
+        const match = text.match(recommendedRegex);
+        let relatedWords = "";
+        let cleanMarkdown = text;
+
+        if (match) {
+          relatedWords = match[1].trim();
+          // 从存入数据库的原始 Markdown 中抹去系统标记，确保前端干净
+          cleanMarkdown = text.replace(recommendedRegex, "").trim();
+        }
+
+        // 2. 动态捕获大模型本次拆解的目标词汇（提取 Markdown 的第一个一级标题）
+        const titleMatch = cleanMarkdown.match(/^#\s+(.+)$/m);
+        const extractedWord = titleMatch ? titleMatch[1].trim() : userWord;
+
+        if (extractedWord) {
+          await prisma.concept.create({
+            data: {
+              word: extractedWord,
+              fullMarkdown: cleanMarkdown,
+              relatedWords: relatedWords
+            }
+          });
+        }
+      } catch (dbError) {
+        console.error('后台异步持久化入库失败:', dbError);
+      }
+    }
+  });
+
+  return result.toDataStreamResponse();
+}
+
+```
+
+---
+
+## 六、 移动端前端核心组件与交互规范 (Mobile UI/UX)
+
+### 1. 随手记沙盘接口 (`app/api/note/route.ts`)
+
+实现前端防抖文本框对应的异步静默静默写入接口：
+
+```typescript
+export async function POST(req: Request) {
+  const { conceptId, content } = await req.json();
+  const updatedNote = await prisma.note.upsert({
+    where: { conceptId },
+    update: { content },
+    create: { conceptId, content }
+  });
+  return Response.json({ success: true, data: updatedNote });
+}
+
+```
+
+### 2. 移动端核心页面组件建议 (`app/page.tsx`)
+
+让 **Claude Code** 编写前端时，必须强制约束其遵循以下 Mobile-First 响应式布局：
+
+* **布局骨架**：单栏全屏高度 (`h-screen flex flex-col justify-between overflow-hidden`)。
+* **主体阅读区 (65vh)**：支持 `overflow-y-auto` 和 `-webkit-overflow-scrolling: touch`，利用 `react-markdown` 实时渲染长文本，确保排版字字清晰。
+* **底部抽屉 (Bottom Sheet)**：
+* 默认收缩态：仅在屏幕最底部吸附一个高度为 `60px` 的精致输入条，提示“📝 点击展开我的思维沙盘”。
+* 展开激活态：点击后借助 Tailwind 动画 (`transition-all duration-300`) 向上平滑弹起至屏幕的 `40vh` 高度，暴露出一个巨大的无边框 `textarea` 文本框。
+* **防抖保存机制**：文本框绑定 `onChange` 事件，内部引入 `lodash.debounce`。用户一旦停止在虚拟键盘上打字满 **1.5秒**，自动向 `/api/note` 发送异步 fetch 请求，屏幕右上角显示微型浅色“已静默保存”字样。
+
+
+* **底部延伸药丸区**：在抽屉最下方，横向排布一排药丸形态的按钮 (`flex overflow-x-auto whitespace-nowrap gap-2 pb-2`)。数据源来自于大模型截获解析出的 `relatedWords` 数组。用户用大拇指轻轻一拨即可横向滑动，点击任意药丸按钮，直接清空当前状态，将新词代入，触发新一轮流式拆解。

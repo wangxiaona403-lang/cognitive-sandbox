@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useCompletion } from "@ai-sdk/react";
 import ReactMarkdown from "react-markdown";
 import debounce from "lodash/debounce";
+import SearchDropdown from "@/components/search-dropdown";
+import SeedBrowser from "@/components/seed-browser";
 
 interface Concept {
   id: string;
@@ -13,11 +15,24 @@ interface Concept {
   note?: { content: string } | null;
 }
 
+// 从 markdown 中提取标题并分离正文
+function splitTitleFromMarkdown(md: string): {
+  title: string;
+  body: string;
+} {
+  const match = md.match(/^#\s+(.+)$/m);
+  if (!match) return { title: "", body: md };
+  const title = match[1].trim();
+  const body = md.replace(/^#\s+.+\n\s*\n?/m, "").trim();
+  return { title, body };
+}
+
 export default function MobileMindGym() {
   const [currentConcept, setCurrentConcept] = useState<Concept | null>(null);
   const [noteContent, setNoteContent] = useState("");
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [showSeedPanel, setShowSeedPanel] = useState(false);
   const debouncedSaveRef = useRef<ReturnType<typeof debounce> | null>(null);
 
   const { completion, complete, setCompletion, isLoading } = useCompletion({
@@ -25,7 +40,7 @@ export default function MobileMindGym() {
     streamProtocol: "text",
   });
 
-  // 1.5 秒防抖静默保存
+  // 1.5 秒防抖静默保存笔记
   useEffect(() => {
     debouncedSaveRef.current = debounce(
       async (conceptId: string, content: string) => {
@@ -37,19 +52,18 @@ export default function MobileMindGym() {
             body: JSON.stringify({ conceptId, content }),
           });
         } catch {
-          // 静默失败，不打断用户
+          // 静默失败
         }
         setIsSaving(false);
       },
       1500
     );
-
     return () => {
       debouncedSaveRef.current?.cancel();
     };
   }, []);
 
-  // 先查缓存（JSON），命中则秒开；未命中则走流式生成
+  // 核心请求流：先查缓存（JSON），命中则秒开；未命中则走流式生成
   const handleFetchConcept = useCallback(
     async (targetWord?: string) => {
       setIsDrawerOpen(false);
@@ -89,29 +103,59 @@ export default function MobileMindGym() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 笔记变更 → 防抖保存
-  const handleNoteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const val = e.target.value;
-    setNoteContent(val);
-    if (currentConcept?.id) {
-      debouncedSaveRef.current?.(currentConcept.id, val);
-    }
-  };
-
-  // 流式结束后尝试从 completion 解析 concept（若无缓存返回）
+  // 流式结束后从 API 获取真实概念 ID
   useEffect(() => {
     if (!isLoading && completion && !currentConcept) {
       const titleMatch = completion.match(/^#\s+(.+)$/m);
       if (titleMatch) {
-        setCurrentConcept({
-          id: "",
-          word: titleMatch[1].trim(),
-          fullMarkdown: completion,
-          relatedWords: "",
-        });
+        const extractedWord = titleMatch[1].trim();
+
+        const fetchConcept = async (attempt: number) => {
+          try {
+            const res = await fetch(
+              `/api/concepts?word=${encodeURIComponent(extractedWord)}`
+            );
+            if (res.ok) {
+              const data = await res.json();
+              if (data.result) {
+                setCurrentConcept(data.result);
+                if (data.result.note) {
+                  setNoteContent(data.result.note.content);
+                }
+                return;
+              }
+            }
+            // 概念尚未存入（onFinish 竞态），800ms 后重试一次
+            if (attempt < 1) {
+              setTimeout(() => fetchConcept(attempt + 1), 800);
+            } else {
+              // 兜底：使用临时 ID
+              setCurrentConcept({
+                id: `temp:${extractedWord}`,
+                word: extractedWord,
+                fullMarkdown: completion,
+                relatedWords: "",
+              });
+            }
+          } catch {
+            if (attempt < 1) {
+              setTimeout(() => fetchConcept(attempt + 1), 800);
+            }
+          }
+        };
+        fetchConcept(0);
       }
     }
   }, [isLoading, completion, currentConcept]);
+
+  // 笔记变更 → 防抖保存
+  const handleNoteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setNoteContent(val);
+    if (currentConcept?.id && !currentConcept.id.startsWith("temp:")) {
+      debouncedSaveRef.current?.(currentConcept.id, val);
+    }
+  };
 
   // 解析推荐关联词
   const getRelatedWords = (): string[] => {
@@ -121,7 +165,6 @@ export default function MobileMindGym() {
         .map((w) => w.trim())
         .filter(Boolean);
     }
-    // 也从流文本动态提取
     const match = completion.match(
       /\[RECOMMENDED_START\]([\s\S]*?)\[RECOMMENDED_END\]/
     );
@@ -136,34 +179,72 @@ export default function MobileMindGym() {
 
   const relatedWords = getRelatedWords();
 
+  // 渲染关联词药丸条（抽离为函数，两处复用）
+  const renderPillStrip = (words: string[]) => {
+    if (words.length === 0) return null;
+    return (
+      <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap py-2 scrollbar-none">
+        <span className="text-xs text-zinc-500 shrink-0">延伸触角:</span>
+        {words.map((word, index) => (
+          <button
+            key={`${word}-${index}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleFetchConcept(word);
+            }}
+            disabled={isLoading}
+            className="text-xs px-3 py-1.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 active:bg-amber-500 active:text-black hover:border-amber-500/40 transition shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {word}
+          </button>
+        ))}
+      </div>
+    );
+  };
+
+  // 从 markdown（优先用 currentConcept.fullMarkdown，否则用 completion）拆分标题和正文
+  const sourceMd = currentConcept?.fullMarkdown || completion;
+  const { title, body } = splitTitleFromMarkdown(sourceMd);
+
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-zinc-950 text-zinc-100 font-sans select-none">
-      {/* 顶部极简导航栏 */}
-      <header className="h-14 px-4 flex items-center justify-between border-b border-zinc-800 bg-zinc-900/50 backdrop-blur shrink-0">
-        <span className="text-sm font-semibold tracking-wider text-amber-400">
+      {/* 顶部导航栏 */}
+      <header className="h-14 px-3 flex items-center justify-between border-b border-zinc-800 bg-zinc-900/50 backdrop-blur shrink-0 gap-2">
+        <span className="text-sm font-semibold tracking-wider text-amber-400 shrink-0 hidden sm:inline">
           🧠 思维沙盘
         </span>
-        <div className="flex items-center gap-3">
+
+        {/* 搜索框 */}
+        <SearchDropdown onSelect={(word) => handleFetchConcept(word)} />
+
+        {/* 操作按钮 */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => setShowSeedPanel(true)}
+            className="text-xs px-2.5 py-1.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 active:bg-zinc-700 transition"
+          >
+            🌱 词库
+          </button>
           {isSaving && (
-            <span className="text-xs text-zinc-500 animate-pulse">
+            <span className="text-xs text-zinc-500 animate-pulse hidden sm:inline">
               已静默保存
             </span>
           )}
           <button
             onClick={() => handleFetchConcept()}
             disabled={isLoading}
-            className="text-xs px-3 py-1.5 rounded-full bg-amber-500 text-black font-medium active:scale-95 transition disabled:opacity-50"
+            className="text-xs px-3 py-1.5 rounded-full bg-amber-500 text-black font-medium active:scale-95 transition disabled:opacity-50 whitespace-nowrap"
           >
-            {isLoading ? "碰撞中..." : "刷新新词"}
+            {isLoading ? "碰撞中..." : "刷新"}
           </button>
         </div>
       </header>
 
       {/* 主体滚动阅读区 */}
-      <main className="flex-1 overflow-y-auto px-4 py-6 pb-24 space-y-4 scrolling-touch">
+      <main className="flex-1 overflow-y-auto px-4 py-6 pb-4 space-y-4 scrolling-touch">
         {!completion && !isLoading && (
           <p className="text-zinc-500 text-sm text-center mt-20">
-            点击「刷新新词」开始思维探索
+            点击「刷新」开始思维探索
           </p>
         )}
         {isLoading && !completion && (
@@ -171,11 +252,31 @@ export default function MobileMindGym() {
             正在碰撞思维...
           </p>
         )}
+
         {completion && (
-          <article className="prose prose-invert prose-amber max-w-none">
-            <ReactMarkdown>{completion}</ReactMarkdown>
-          </article>
+          <>
+            {/* 突出标题 */}
+            {title && (
+              <div className="mb-6">
+                <h1 className="text-2xl font-bold text-amber-300 tracking-wide leading-tight">
+                  {title}
+                </h1>
+                <div className="mt-2 w-12 h-0.5 bg-amber-500/50 rounded-full" />
+              </div>
+            )}
+
+            {/* Markdown 正文（已去除标题） */}
+            <article className="prose prose-invert prose-amber max-w-none">
+              <ReactMarkdown>{body || completion}</ReactMarkdown>
+            </article>
+
+            {/* 始终可见的关联词药丸 */}
+            {renderPillStrip(relatedWords)}
+          </>
         )}
+
+        {/* 底部留白（给抽屉把手） */}
+        <div className="h-16" />
       </main>
 
       {/* 底部可上滑思维沙盘抽屉 */}
@@ -208,34 +309,29 @@ export default function MobileMindGym() {
             <textarea
               value={noteContent}
               onChange={handleNoteChange}
-              disabled={!currentConcept?.id && !completion}
+              disabled={
+                !currentConcept?.id || currentConcept.id.startsWith("temp:")
+              }
               placeholder={
-                currentConcept?.id || completion
+                currentConcept?.id && !currentConcept.id.startsWith("temp:")
                   ? "在这里记录你被触动的灵感、行业对照或破局思考..."
                   : "请等待大模型解构完成再记录笔记..."
               }
               className="flex-1 bg-zinc-950 text-zinc-200 text-sm p-3 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-500/50 resize-none placeholder-zinc-600 min-h-0"
             />
-            {/* 延伸思考药丸卡片区 */}
-            {relatedWords.length > 0 && (
-              <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap py-1 scrollbar-none">
-                <span className="text-xs text-zinc-500 shrink-0">
-                  延伸触角:
-                </span>
-                {relatedWords.map((word, index) => (
-                  <button
-                    key={index}
-                    onClick={() => handleFetchConcept(word)}
-                    className="text-xs px-3 py-1 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 active:bg-amber-500 active:text-black transition shrink-0"
-                  >
-                    {word}
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* 抽屉内的药丸（记笔记时也可点击） */}
+            {renderPillStrip(relatedWords)}
           </div>
         )}
       </div>
+
+      {/* 种子词浏览器 */}
+      <SeedBrowser
+        isOpen={showSeedPanel}
+        onClose={() => setShowSeedPanel(false)}
+        onSelect={(word) => handleFetchConcept(word)}
+        isLoading={isLoading}
+      />
     </div>
   );
 }
