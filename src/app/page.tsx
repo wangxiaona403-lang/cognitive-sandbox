@@ -48,28 +48,36 @@ export default function MobileMindGym() {
     };
   }, []);
 
-  // 核心请求：秒开缓存或调取大模型
+  // 先查缓存（JSON），命中则秒开；未命中则走流式生成
   const handleFetchConcept = useCallback(
     async (targetWord?: string) => {
       setIsDrawerOpen(false);
       setNoteContent("");
 
-      const res = await fetch("/api/think", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ word: targetWord ?? "" }),
-      });
+      // 1. 快速缓存检查
+      try {
+        const checkRes = await fetch("/api/think", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ word: targetWord ?? "", checkOnly: true }),
+        });
 
-      const result = await res.json();
-
-      if (result.mode === "cache") {
-        setCurrentConcept(result.data);
-        setCompletion(result.data.fullMarkdown);
-        if (result.data.note) setNoteContent(result.data.note.content);
-      } else {
-        setCurrentConcept(null);
-        complete(targetWord ?? "");
+        if (checkRes.ok) {
+          const result = await checkRes.json();
+          if (result.mode === "cache") {
+            setCurrentConcept(result.data);
+            setCompletion(result.data.fullMarkdown);
+            if (result.data.note) setNoteContent(result.data.note.content);
+            return;
+          }
+        }
+      } catch {
+        // 缓存检查失败，继续走流式
       }
+
+      // 2. 缓存未命中 → 流式生成
+      setCurrentConcept(null);
+      complete(targetWord ?? "");
     },
     [complete, setCompletion]
   );

@@ -94,7 +94,10 @@ async function executeLLMStream(
 
 export async function POST(req: Request) {
   try {
-    const { word } = await req.json();
+    const body = await req.json();
+    // useCompletion 的 complete() 发送 prompt 字段，前端直接 fetch 发送 word 字段
+    const word = body.word ?? body.prompt ?? "";
+    const checkOnly = body.checkOnly ?? false;
 
     // ── 1. 缓存优先 ──────────────────────────────────
     if (word) {
@@ -105,6 +108,11 @@ export async function POST(req: Request) {
       if (cachedConcept) {
         return Response.json({ mode: "cache", data: cachedConcept });
       }
+    }
+
+    // 仅缓存检查模式，不触发 LLM
+    if (checkOnly) {
+      return Response.json({ mode: "miss" });
     }
 
     // ── 2. 去重引擎 ──────────────────────────────────
