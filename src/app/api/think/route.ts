@@ -1,4 +1,4 @@
-import { createOpenAI } from "@ai-sdk/openai";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { streamText } from "ai";
 import { prisma } from "@/lib/prisma";
 import { SEED_WORDS } from "@/data/seeds";
@@ -55,15 +55,15 @@ function extractWordFromMarkdown(
  * 核心流处理与异步持久化入库
  */
 async function executeLLMStream(
-  client: ReturnType<typeof createOpenAI>,
+  client: ReturnType<typeof createOpenAICompatible>,
   model: string,
   systemPrompt: string,
   userWord: string
 ) {
   const result = streamText({
     model: client(model),
+    system: systemPrompt,
     messages: [
-      { role: "system", content: systemPrompt },
       {
         role: "user",
         content: userWord || "请刷新并盲抠下一个全新词汇。",
@@ -134,9 +134,10 @@ export async function POST(req: Request) {
 
     // ── 4. 双模型无感灾备转移 ─────────────────────────
     try {
-      const zhipuClient = createOpenAI({
+      const zhipuClient = createOpenAICompatible({
+        name: "zhipu",
         apiKey: process.env.ZHIPU_API_KEY,
-        baseURL: process.env.ZHIPU_BASE_URL,
+        baseURL: process.env.ZHIPU_BASE_URL!,
       });
       const zhipuModel = process.env.ZHIPU_MODEL || "glm-4-flash";
 
@@ -152,9 +153,10 @@ export async function POST(req: Request) {
         zhipuError
       );
 
-      const deepseekClient = createOpenAI({
+      const deepseekClient = createOpenAICompatible({
+        name: "deepseek",
         apiKey: process.env.DEEPSEEK_API_KEY,
-        baseURL: process.env.DEEPSEEK_BASE_URL,
+        baseURL: process.env.DEEPSEEK_BASE_URL!,
       });
       const deepseekModel = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 
