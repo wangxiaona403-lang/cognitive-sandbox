@@ -1,0 +1,520 @@
+这里为你将整套开发文档、架构设计和所有核心配置代码整合为一个标准的 Markdown 格式内容。你可以直接复制下方框内的所有文本，保存为 `DEVELOPMENT.md` 文件。
+
+```markdown
+# 🧠 “思维沙盘 (Cognitive Sandbox)” 移动端全栈开发技术文档
+
+本项目是一款面向移动端（Mobile-First）设计的沉浸式深度思考工具。通过高概念词汇的激发与解构，结合强制性的多维反问与行动指南，帮助用户打破认知惰性。
+
+---
+
+## 📂 目录
+1. [技术栈选型](#1-技术栈选型)
+2. [环境配置与初始化](#2-环境配置与初始化)
+3. [数据库建模 (Prisma Schema)](#3-数据库建模-prisma-schema)
+4. [核心提示词工程 (Prompt Engineering)](#4-核心提示词工程-prompt-engineering)
+5. [后端核心路由 (大模型双向调度与故障切换)](#5-后端核心路由-大模型双向调度与故障切换)
+6. [笔记无感保存接口](#6-笔记无感保存接口)
+7. [移动端前端核心组件 (UI/UX)](#7-移动端前端核心组件-uiux)
+8. [PWA 移动端免安装部署配置](#8-pwa-移动端免安装部署配置)
+
+---
+
+## 1. 技术栈选型
+
+* **全栈框架**：Next.js 15+ (App Router, TypeScript)
+* **样式系统**：Tailwind CSS (响应式、Dark Mode 优先)
+* **数据库 ORM**：Prisma Client
+* **云数据库**：Supabase (PostgreSQL 免费版)
+* **AI 流式传输框架**：Vercel AI SDK (`ai`, `@ai-sdk/openai`)
+* **离线与原生化体验**：`next-pwa` (支持无边框添加到手机主屏幕)
+
+---
+
+## 2. 环境配置与初始化
+
+### 2.1 环境变量配置 (`.env.local`)
+在项目根目录下创建 `.env.local` 文件，配置数据库连接与大模型 API 凭证：
+
+```env
+# Supabase PostgreSQL 连接字符串 (开启连接池模式)
+DATABASE_URL="postgresql://postgres:[YOUR_PASSWORD]@[aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true](https://aws-0-ap-northeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true)"
+
+# 主力模型：智谱清言 (优先调用)
+ZHIPU_API_KEY="your_zhipu_api_key_here"
+ZHIPU_BASE_URL="[https://open.bigmodel.cn/api/paas/v4](https://open.bigmodel.cn/api/paas/v4)"
+ZHIPU_MODEL="glm-4-flash"
+
+# 容灾备用模型：DeepSeek (降级保障)
+DEEPSEEK_API_KEY="your_deepseek_api_key_here"
+DEEPSEEK_BASE_URL="[https://api.deepseek.com/v1](https://api.deepseek.com/v1)"
+DEEPSEEK_MODEL="deepseek-chat"
+
+```
+
+### 2.2 冷启动种子词仓 (`src/data/seeds.ts`)
+
+用于系统完全空白时的冷启动随机抽取。包含 20 个高阶词汇示范（开发中可自行增补至 100 个）：
+
+```typescript
+export const SEED_WORDS: string[] = [
+  "习得性无助", "达克效应", "自我觉醒", "皮格马利翁效应", "路径依赖", 
+  "幸存者偏差", "沉没成本谬误", "奥卡姆剃刀", "帕累托法则", "熵增定律",
+  "非线性思维", "认知闭合需求", "马太效应", "锚定效应", "克里斯坦森颠覆",
+  "心流体验", "罗森塔尔效应", "旁观者效应", "破窗效应", "墨菲定律"
+];
+
+```
+
+---
+
+## 3. 数据库建模 (Prisma Schema)
+
+在 `prisma/schema.prisma` 中定义核心实体。确保概念表与笔记表满足 **一对一 (1:1) 强关联**，并支持级联删除。
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 概念解构核心表
+model Concept {
+  id           String   @id @default(uuid())
+  word         String   @unique                  // 词汇名称（建立唯一索引，用于快速检索与去重）
+  fullMarkdown String   @db.Text                 // 大模型生成的完整 8 模块解构 Markdown 文本
+  relatedWords String   @default("")             // 底部关联推荐词，存储为逗号分隔的字符串（如 "达克效应,自我设限"）
+  createdAt    DateTime @default(now())
+  note         Note?                             // 一对一关联的个人思维笔记
+}
+
+// 个人随笔沙盘表
+model Note {
+  id        String   @id @default(uuid())
+  content   String   @db.Text                   // 个人思想沉淀内容
+  conceptId String   @unique                    // 外键约束
+  concept   Concept  @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+}
+
+```
+
+---
+
+## 4. 核心提示词工程 (Prompt Engineering)
+
+系统在发送请求前，会拼接用户内置的硬核 **8模块深度解构提示词** 与 **工程化格式补丁**。
+
+### 4.1 系统最终组合提示词架构
+
+```text
+【角色设定】
+你是一位冷静、客观、极致耐心的"知识拆解专家"…… (此处完整植入你准备的词汇详解提示词)
+
+【输出模块】
+请严格按照以下8个模块进行输出，要求每个模块都极度详尽，揉碎掰开了讲：
+模块一：学术严谨定义
+模块二：大白话解码
+模块三：深度与广度透视
+模块四：高维提问构建与思维发散
+模块五：逻辑推演与思考留白
+模块六：场景具象化
+模块七：常识还原与可复用范式提取
+模块八：行动指南与实操落地
+
+【工程化硬性补充限制】
+1. 你当前生成的词汇绝对不能包含在以下黑名单列表中：[${excludeWordsList}]。
+2. 如果当前给定的主词汇为空，请你全网自主选择一个符合设定的全新抽象词汇。
+3. 请严格执行上述【输出模块】的 8 个模块，使用标准的 Markdown 语法进行流式输出。
+4. 结束“模块八”的所有内容后，请空两行，并【严格】按照以下格式输出 3-5 个与当前主词汇高度相关的专业关联词（用于系统前端标签卡片的动态高亮渲染），不要附加任何多余的解释、前言或符号：
+[RECOMMENDED_START]
+关联词1, 关联词2, 关联词3
+[RECOMMENDED_END]
+
+```
+
+---
+
+## 5. 后端核心路由 (`app/api/think/route.ts`)
+
+该接口实现了**本地缓存秒开**、**冷启动去重**、**智谱 ➡️ DeepSeek 自动故障转移切换**以及**流结束异步入库**。
+
+```typescript
+import { createOpenAI } from '@ai-sdk/openai';
+import { streamText } from 'ai';
+import { prisma } from '@/lib/prisma'; 
+import { SEED_WORDS } from '@/data/seeds';
+
+export const maxDuration = 60; // 提高超时阈值，保障长文本稳定流式输出
+
+export async function POST(req: Request) {
+  try {
+    const { word } = await req.json();
+
+    // 1. 【缓存优先】如果指定了词汇，先去 Supabase 数据库匹配历史记录
+    if (word) {
+      const cachedConcept = await prisma.concept.findUnique({
+        where: { word },
+        include: { note: true }
+      });
+      if (cachedConcept) {
+        return Response.json({ mode: 'cache', data: cachedConcept });
+      }
+    }
+
+    // 2. 【去重引擎】拉取数据库已读词汇列表
+    const visitedConcepts = await prisma.concept.findMany({ select: { word: true } });
+    const visitedWords = visitedConcepts.map(c => c.word);
+
+    let targetWord = word;
+    
+    // 如果无指定词汇，开启智能抽取流
+    if (!targetWord) {
+      const remainingSeeds = SEED_WORDS.filter(w => !visitedWords.includes(w));
+      if (remainingSeeds.length > 0) {
+        // 种子未耗尽，从剩余种子中随机抓取一个
+        targetWord = remainingSeeds[Math.floor(Math.random() * remainingSeeds.length)];
+      } else {
+        // 种子已耗尽，开启全网盲抠模式
+        targetWord = ""; 
+      }
+    }
+
+    const excludeWordsList = visitedWords.join(', ');
+
+    // 3. 组合最终 Prompt (此处 baseUserPrompt 包含用户上传的完整8模块内容，具体内容在同层级的prompt.txt文件中)
+    const baseUserPrompt = `你是一位冷静、客观、极致耐心的"知识拆解专家"……`;
+    const engineeringPatch = `
+    【工程化硬性补充限制】
+    1. 你当前生成的词汇绝对不能包含在以下黑名单列表中：[${excludeWordsList}]。
+    2. 如果当前给定的主词汇为空，请你全网自主选择一个符合设定的全新词汇。
+    3. 请严格执行上述【输出模块】的 8 个模块。
+    4. 结束“模块八”后，必须精确按照以下格式输出关联词：
+    [RECOMMENDED_START]
+    关联词1, 关联词2, 关联词3
+    [RECOMMENDED_END]`;
+
+    const finalSystemPrompt = `${baseUserPrompt}\n${engineeringPatch}`;
+
+    // 4. 【双模型无感灾备转移控制】
+    let client;
+    let modelName;
+
+    try {
+      // 第一优先级：智谱 AI
+      client = createOpenAI({
+        apiKey: process.env.ZHIPU_API_KEY,
+        baseURL: process.env.ZHIPU_BASE_URL,
+      });
+      modelName = process.env.ZHIPU_MODEL || 'glm-4-flash';
+      
+      return await executeLLMStream(client, modelName, finalSystemPrompt, targetWord);
+    } catch (zhipuError) {
+      console.warn('智谱 AI 服务波动，正在无缝切流至备份模型 DeepSeek...', zhipuError);
+      
+      // 第二优先级：DeepSeek
+      client = createOpenAI({
+        apiKey: process.env.DEEPSEEK_API_KEY,
+        baseURL: process.env.DEEPSEEK_BASE_URL,
+      });
+      modelName = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+      
+      return await executeLLMStream(client, modelName, finalSystemPrompt, targetWord);
+    }
+
+  } catch (globalError) {
+    console.error('全栈链路异常:', globalError);
+    return Response.json({ error: '系统核心服务异常' }, { status: 500 });
+  }
+}
+
+// 核心流处理与异步持久化入库函数
+async function executeLLMStream(client: any, model: string, systemPrompt: string, userWord: string) {
+  const result = await streamText({
+    model: client(model),
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userWord || '请刷新并盲抠下一个全新词汇。' }
+    ],
+    // 关键回调：当流式传输在手机端完全走完后，后台无感异步存入 Supabase
+    onFinish: async ({ text }) => {
+      try {
+        const recommendedRegex = /\[RECOMMENDED_START\]([\s\S]*?)\[RECOMMENDED_END\]/;
+        const match = text.match(recommendedRegex);
+        let relatedWords = "";
+        let cleanMarkdown = text;
+
+        if (match) {
+          relatedWords = match[1].trim();
+          cleanMarkdown = text.replace(recommendedRegex, "").trim();
+        }
+
+        // 提取 Markdown 的第一个一级标题作为词汇名称
+        const titleMatch = cleanMarkdown.match(/^#\s+(.+)$/m);
+        const extractedWord = titleMatch ? titleMatch[1].trim() : userWord;
+
+        if (extractedWord) {
+          await prisma.concept.create({
+            data: {
+              word: extractedWord,
+              fullMarkdown: cleanMarkdown,
+              relatedWords: relatedWords
+            }
+          });
+        }
+      } catch (dbError) {
+        console.error('后台异步持久化入库失败:', dbError);
+      }
+    }
+  });
+
+  return result.toDataStreamResponse();
+}
+
+```
+
+---
+
+## 6. 笔记无感保存接口 (`app/api/note/route.ts`)
+
+处理手机前端防抖触发的异步静默写入请求：
+
+```typescript
+import { prisma } from '@/lib/prisma';
+
+export async function POST(req: Request) {
+  try {
+    const { conceptId, content } = await req.json();
+    
+    const updatedNote = await prisma.note.upsert({
+      where: { conceptId },
+      update: { content },
+      create: { conceptId, content }
+    });
+    
+    return Response.json({ success: true, data: updatedNote });
+  } catch (error) {
+    return Response.json({ error: '笔记保存失败' }, { status: 500 });
+  }
+}
+
+```
+
+---
+
+## 7. 移动端前端核心组件 (`app/page.tsx`)
+
+响应式单栏布局。集成了 **Markdown 流渲染**、**双状态上滑笔记抽屉** 及 **1.5秒防抖静默保存**。
+
+```tsx
+'use client';
+
+import { useState, useEffect, useRef } from 'react';
+import { useCompletion } from 'ai/react';
+import ReactMarkdown from 'react-markdown';
+import debounce from 'lodash/debounce';
+
+export default function MobileMindGym() {
+  const [currentConcept, setCurrentConcept] = useState<any>(null);
+  const [noteContent, setNoteContent] = useState('');
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Vercel AI SDK 钩子用于流式文本接收
+  const { completion, complete, setCompletion, isLoading } = useCompletion({
+    api: '/api/think',
+  });
+
+  // 核心请求流：秒开缓存或调取大模型
+  const handleFetchConcept = async (targetWord?: string) => {
+    setIsDrawerOpen(false);
+    setNoteContent('');
+    
+    const res = await fetch('/api/think', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ word: targetWord }),
+    });
+
+    const result = await res.json();
+    
+    // 情况 A: 命中缓存直接秒开
+    if (result.mode === 'cache') {
+      setCurrentConcept(result.data);
+      setCompletion(result.data.fullMarkdown);
+      if (result.data.note) setNoteContent(result.data.note.content);
+    } else {
+      // 情况 B: 走流式大模型生成
+      setCurrentConcept(null);
+      complete(targetWord || '');
+    }
+  };
+
+  // 1.5秒防抖无感自动保存笔记
+  const debouncedSaveNote = useRef(
+    debounce(async (conceptId: string, content: string) => {
+      setIsSaving(true);
+      await fetch('/api/note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conceptId, content }),
+      });
+      setIsSaving(false);
+    }, 1500)
+  ).current;
+
+  const handleNoteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    setNoteContent(val);
+    if (currentConcept?.id) {
+      debouncedSaveNote(currentConcept.id, val);
+    }
+  };
+
+  useEffect(() => {
+    handleFetchConcept(); // 冷启动首次加载
+  }, []);
+
+  // 解析底部的推荐关联词
+  const getRelatedWords = () => {
+    if (currentConcept?.relatedWords) return currentConcept.relatedWords.split(',');
+    // 也可以从流式生成的文本末尾通过正则动态匹配提取
+    return [];
+  };
+
+  return (
+    <div className="h-screen flex flex-col justify-between overflow-hidden bg-zinc-950 text-zinc-100 font-sans select-none">
+      {/* 顶部极简导航栏 */}
+      <header className="h-14 px-4 flex items-center justify-between border-b border-zinc-800 bg-zinc-900/50 backdrop-blur">
+        <span className="text-sm font-semibold tracking-wider text-amber-400">🧠 思维沙盘</span>
+        <div className="flex items-center gap-3">
+          {isSaving && <span className="text-xs text-zinc-500 animate-pulse">已静默保存</span>}
+          <button 
+            onClick={() => handleFetchConcept()} 
+            disabled={isLoading}
+            className="text-xs px-3 py-1.5 rounded-full bg-amber-500 text-black font-medium active:scale-95 transition"
+          >
+            {isLoading ? '碰撞中...' : '刷新新词'}
+          </button>
+        </div>
+      </header>
+
+      {/* 主体滚动阅读区 (8大模块沉浸渲染) */}
+      <main className="flex-1 overflow-y-auto px-4 py-6 pb-24 space-y-4 scrolling-touch">
+        <article className="prose prose-invert prose-amber max-w-none">
+          <ReactMarkdown>{completion}</ReactMarkdown>
+        </article>
+      </main>
+
+      {/* 底部双状态可上滑思维沙盘抽屉 */}
+      <div className={`fixed bottom-0 left-0 right-0 bg-zinc-900 border-t border-zinc-800 transition-all duration-300 z-50 flex flex-col ${isDrawerOpen ? 'h-[45vh]' : 'h-[60px]'}`}>
+        {/* 抽屉把手控制条 */}
+        <div 
+          onClick={() => setIsDrawerOpen(!isDrawerOpen)}
+          className="h-[60px] px-4 flex items-center justify-between cursor-pointer border-b border-zinc-800/50 active:bg-zinc-800/30"
+        >
+          <div className="flex items-center gap-2">
+            <span>📝</span>
+            <span className="text-sm font-medium text-zinc-300">
+              {isDrawerOpen ? '正在整理思想沙盘...' : '点击或上划展开思维沙盘'}
+            </span>
+          </div>
+          <span className="text-xs text-zinc-500">{isDrawerOpen ? '👇 收起' : '👆 展开'}</span>
+        </div>
+
+        {/* 抽屉内部大文本框 */}
+        {isDrawerOpen && (
+          <div className="flex-1 p-4 flex flex-col gap-3">
+            <textarea
+              value={noteContent}
+              onChange={handleNoteChange}
+              disabled={!currentConcept?.id}
+              placeholder={currentConcept?.id ? "在这里记录你被触动的灵感、行业对照或破局思考..." : "请等待大模型解构完成再记录笔记..."}
+              className="flex-1 bg-zinc-950 text-zinc-200 text-sm p-3 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-500/50 resize-none placeholder-zinc-600"
+            />
+            {/* 延伸思考药丸卡片区 */}
+            <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap py-1 scrollbar-none">
+              <span className="text-xs text-zinc-500">延伸触角:</span>
+              {getRelatedWords().map((word: string, index: number) => (
+                <button
+                  key={index}
+                  onClick={() => handleFetchConcept(word.trim())}
+                  className="text-xs px-3 py-1 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-300 active:bg-amber-500 active:text-black transition"
+                >
+                  {word.trim()}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+```
+
+---
+
+## 8. PWA 移动端免安装部署配置
+
+为了在手机端获得媲美原生 App 的无边框沉浸体验，需要将 Next.js 包装为渐进式 Web 应用 (PWA)。
+
+### 8.1 依赖安装
+
+```bash
+npm install next-pwa
+
+```
+
+### 8.2 配置文件修改 (`next.config.js`)
+
+```javascript
+const withPWA = require('next-pwa')({
+  dest: 'public',
+  register: true,
+  skipWaiting: true,
+  disable: process.env.NODE_ENV === 'development' // 开发环境禁用缓存，防止调试卡壳
+});
+
+module.exports = withPWA({
+  reactStrictMode: true,
+});
+
+```
+
+### 8.3 建立 PWA 清单 (`public/manifest.json`)
+
+```json
+{
+  "name": "思维沙盘 Cognitive Sandbox",
+  "short_name": "思维沙盘",
+  "description": "打破信息茧房与认知惰性的全栈深度思考工具",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
+
+```
+
+*(注：项目上线部署到 Vercel 后，在手机自带浏览器中打开生成的专属秘密网址，点击菜单里的“添加到主屏幕”，即可在桌面上生成无边框的原生效果小图标。)*
+
+```
+
+```

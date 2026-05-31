@@ -1,0 +1,26 @@
+datasource db {
+  provider = "postgresql"
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 概念解构核心表
+model Concept {
+  id           String   @id @default(uuid())
+  word         String   @unique
+  fullMarkdown String   @db.Text
+  relatedWords String   @default("")
+  createdAt    DateTime @default(now())
+  note         Note?
+}
+
+// 个人随笔沙盘表
+model Note {
+  id        String   @id @default(uuid())
+  content   String   @db.Text
+  conceptId String   @unique
+  concept   Concept  @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+  updatedAt DateTime @updatedAt
+}
