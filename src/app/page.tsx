@@ -22,6 +22,7 @@ export default function MobileMindGym() {
 
   const { completion, complete, setCompletion, isLoading } = useCompletion({
     api: "/api/think",
+    streamProtocol: "text",
   });
 
   // 1.5 秒防抖静默保存
