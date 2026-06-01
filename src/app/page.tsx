@@ -33,6 +33,7 @@ export default function MobileMindGym() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSeedPanel, setShowSeedPanel] = useState(false);
+  const pendingWordRef = useRef<string>("");
   const debouncedSaveRef = useRef<ReturnType<typeof debounce> | null>(null);
 
   const { completion, complete, setCompletion, isLoading } = useCompletion({
@@ -92,6 +93,7 @@ export default function MobileMindGym() {
 
       // 2. 缓存未命中 → 流式生成
       setCurrentConcept(null);
+      pendingWordRef.current = targetWord ?? "";
       complete(targetWord ?? "");
     },
     [complete, setCompletion]
@@ -107,8 +109,11 @@ export default function MobileMindGym() {
   useEffect(() => {
     if (!isLoading && completion && !currentConcept) {
       const titleMatch = completion.match(/^#\s+(.+)$/m);
-      if (titleMatch) {
-        const extractedWord = titleMatch[1].trim();
+      // 优先用 markdown 中的标题，其次用请求时传入的词
+      const extractedWord = titleMatch
+        ? titleMatch[1].trim()
+        : pendingWordRef.current;
+      if (extractedWord) {
 
         const fetchConcept = async (attempt: number) => {
           try {
