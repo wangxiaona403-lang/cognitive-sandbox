@@ -180,11 +180,12 @@ export default function MobileMindGym() {
   const relatedWords = getRelatedWords();
 
   // 渲染关联词药丸条（抽离为函数，两处复用）
-  const renderPillStrip = (words: string[]) => {
+  const renderPillStrip = (words: string[], parentWord?: string) => {
     if (words.length === 0) return null;
+    const label = parentWord ? `「${parentWord}」的延伸触角:` : "延伸触角:";
     return (
       <div className="flex items-center gap-2 overflow-x-auto whitespace-nowrap py-2 scrollbar-none">
-        <span className="text-xs text-zinc-500 shrink-0">延伸触角:</span>
+        <span className="text-xs text-zinc-500 shrink-0">{label}</span>
         {words.map((word, index) => (
           <button
             key={`${word}-${index}`}
@@ -202,9 +203,13 @@ export default function MobileMindGym() {
     );
   };
 
-  // 从 markdown（优先用 currentConcept.fullMarkdown，否则用 completion）拆分标题和正文
-  const sourceMd = currentConcept?.fullMarkdown || completion;
-  const { title, body } = splitTitleFromMarkdown(sourceMd);
+  // 概念标题：优先用 currentConcept.word，其次从 markdown 提取
+  const conceptTitle =
+    currentConcept?.word || splitTitleFromMarkdown(completion).title;
+  // 正文 markdown（去除 H1 标题后）
+  const { body } = splitTitleFromMarkdown(
+    currentConcept?.fullMarkdown || completion
+  );
 
   return (
     <div className="h-screen flex flex-col overflow-hidden bg-zinc-950 text-zinc-100 font-sans select-none">
@@ -256,10 +261,10 @@ export default function MobileMindGym() {
         {completion && (
           <>
             {/* 突出标题 */}
-            {title && (
+            {conceptTitle && (
               <div className="mb-6">
                 <h1 className="text-2xl font-bold text-amber-300 tracking-wide leading-tight">
-                  {title}
+                  {conceptTitle}
                 </h1>
                 <div className="mt-2 w-12 h-0.5 bg-amber-500/50 rounded-full" />
               </div>
@@ -271,7 +276,7 @@ export default function MobileMindGym() {
             </article>
 
             {/* 始终可见的关联词药丸 */}
-            {renderPillStrip(relatedWords)}
+            {renderPillStrip(relatedWords, conceptTitle)}
           </>
         )}
 
@@ -320,7 +325,7 @@ export default function MobileMindGym() {
               className="flex-1 bg-zinc-950 text-zinc-200 text-sm p-3 rounded-lg border border-zinc-800 focus:outline-none focus:border-amber-500/50 resize-none placeholder-zinc-600 min-h-0"
             />
             {/* 抽屉内的药丸（记笔记时也可点击） */}
-            {renderPillStrip(relatedWords)}
+            {renderPillStrip(relatedWords, conceptTitle)}
           </div>
         )}
       </div>
