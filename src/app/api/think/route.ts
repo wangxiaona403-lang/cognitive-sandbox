@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { SEED_WORDS } from "@/data/seeds";
 import { SYSTEM_PROMPT } from "@/data/prompt";
 
-export const maxDuration = 180;
+export const maxDuration = 180; // Vercel Fluid Compute 默认 300s，留有余量
 
 /**
  * 构建工程化硬性补充限制补丁
@@ -62,19 +62,24 @@ async function executeLLMStream(
   userWord: string,
   targetWord: string
 ) {
-  // 预先创建概念占位（确保即使在 onFinish 被跳过时也能保存；force 时清空旧数据）
+  // 预先创建概念占位（仅新建，不覆盖已有内容；确保前端 lookup 能找到记录）
   if (targetWord) {
-    await prisma.concept.upsert({
-      where: { word: targetWord },
-      create: { word: targetWord, fullMarkdown: "", relatedWords: "" },
-      update: { fullMarkdown: "", relatedWords: "" },
-    });
+    try {
+      await prisma.concept.upsert({
+        where: { word: targetWord },
+        create: { word: targetWord, fullMarkdown: "", relatedWords: "" },
+        update: {}, // 不覆盖已有数据，等 onFinish 再更新
+      });
+    } catch {
+      // 占位创建失败不影响主流程
+    }
   }
 
   const result = streamText({
     model: client(model),
     system: systemPrompt,
     maxOutputTokens: 4096,
+    temperature: 0.7,
     messages: [
       {
         role: "user",
@@ -176,28 +181,8 @@ export async function POST(req: Request) {
     const engineeringPatch = buildEngineeringPatch(excludeWordsList);
     const finalSystemPrompt = `${SYSTEM_PROMPT}\n\n${engineeringPatch}`;
 
-    // ── 4. 双模型无感灾备转移 ─────────────────────────
+    // ── 4. 双模型无感灾备转移（DeepSeek 优先：国际访问更快）──
     try {
-      const zhipuClient = createOpenAICompatible({
-        name: "zhipu",
-        apiKey: process.env.ZHIPU_API_KEY,
-        baseURL: process.env.ZHIPU_BASE_URL!,
-      });
-      const zhipuModel = process.env.ZHIPU_MODEL || "glm-4-flash";
-
-      return await executeLLMStream(
-        zhipuClient,
-        zhipuModel,
-        finalSystemPrompt,
-        targetWord,
-        targetWord
-      );
-    } catch (zhipuError) {
-      console.warn(
-        "智谱 AI 服务波动，正在无缝切流至备份模型 DeepSeek...",
-        zhipuError
-      );
-
       const deepseekClient = createOpenAICompatible({
         name: "deepseek",
         apiKey: process.env.DEEPSEEK_API_KEY,
@@ -208,6 +193,26 @@ export async function POST(req: Request) {
       return await executeLLMStream(
         deepseekClient,
         deepseekModel,
+        finalSystemPrompt,
+        targetWord,
+        targetWord
+      );
+    } catch (deepseekError) {
+      console.warn(
+        "DeepSeek 服务波动，正在无缝切流至备份模型 Zhipu...",
+        deepseekError
+      );
+
+      const zhipuClient = createOpenAICompatible({
+        name: "zhipu",
+        apiKey: process.env.ZHIPU_API_KEY,
+        baseURL: process.env.ZHIPU_BASE_URL!,
+      });
+      const zhipuModel = process.env.ZHIPU_MODEL || "glm-4-flash";
+
+      return await executeLLMStream(
+        zhipuClient,
+        zhipuModel,
         finalSystemPrompt,
         targetWord,
         targetWord
