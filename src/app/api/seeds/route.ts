@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { SEED_WORDS } from "@/data/seeds";
+import { SEED_CATEGORIES } from "@/data/seeds";
 
 export const dynamic = "force-dynamic";
 
@@ -9,19 +9,29 @@ export async function GET() {
   });
   const visitedSet = new Set(visitedConcepts.map((c) => c.word));
 
-  const seeds = SEED_WORDS.map((word) => ({
-    word,
-    visited: visitedSet.has(word),
-  }));
+  let totalVisited = 0;
+  let totalWords = 0;
 
-  const visitedCount = seeds.filter((s) => s.visited).length;
+  const categories = SEED_CATEGORIES.map((cat) => {
+    const seeds = cat.words.map((word) => {
+      const visited = visitedSet.has(word);
+      if (visited) totalVisited++;
+      totalWords++;
+      return { word, visited };
+    });
+    return {
+      category: cat.category,
+      emoji: cat.emoji,
+      seeds,
+    };
+  });
 
   return Response.json({
-    seeds,
+    categories,
     stats: {
-      total: seeds.length,
-      visited: visitedCount,
-      remaining: seeds.length - visitedCount,
+      total: totalWords,
+      visited: totalVisited,
+      remaining: totalWords - totalVisited,
     },
   });
 }
