@@ -59,8 +59,22 @@ async function executeLLMStream(
   client: ReturnType<typeof createOpenAICompatible>,
   model: string,
   systemPrompt: string,
-  userWord: string
+  userWord: string,
+  targetWord: string
 ) {
+  // 预先创建概念占位（确保即使在 onFinish 被跳过时也能保存）
+  if (targetWord) {
+    try {
+      await prisma.concept.upsert({
+        where: { word: targetWord },
+        create: { word: targetWord, fullMarkdown: "", relatedWords: "" },
+        update: {},
+      });
+    } catch {
+      // 保存失败不阻塞流式响应
+    }
+  }
+
   const result = streamText({
     model: client(model),
     system: systemPrompt,
@@ -76,9 +90,9 @@ async function executeLLMStream(
         const extractedWord = extractWordFromMarkdown(cleanMarkdown, userWord);
 
         if (extractedWord) {
-          await prisma.concept.create({
+          await prisma.concept.update({
+            where: { word: extractedWord },
             data: {
-              word: extractedWord,
               fullMarkdown: cleanMarkdown,
               relatedWords,
             },
@@ -154,6 +168,7 @@ export async function POST(req: Request) {
         zhipuClient,
         zhipuModel,
         finalSystemPrompt,
+        targetWord,
         targetWord
       );
     } catch (zhipuError) {
@@ -173,6 +188,7 @@ export async function POST(req: Request) {
         deepseekClient,
         deepseekModel,
         finalSystemPrompt,
+        targetWord,
         targetWord
       );
     }
