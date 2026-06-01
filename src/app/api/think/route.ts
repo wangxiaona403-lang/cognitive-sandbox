@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { SEED_WORDS } from "@/data/seeds";
 import { SYSTEM_PROMPT } from "@/data/prompt";
 
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 /**
  * 构建工程化硬性补充限制补丁
@@ -62,18 +62,19 @@ async function executeLLMStream(
   userWord: string,
   targetWord: string
 ) {
-  // 预先创建概念占位（确保即使在 onFinish 被跳过时也能保存）
+  // 预先创建概念占位（确保即使在 onFinish 被跳过时也能保存；force 时清空旧数据）
   if (targetWord) {
     await prisma.concept.upsert({
       where: { word: targetWord },
       create: { word: targetWord, fullMarkdown: "", relatedWords: "" },
-      update: {},
+      update: { fullMarkdown: "", relatedWords: "" },
     });
   }
 
   const result = streamText({
     model: client(model),
     system: systemPrompt,
+    maxOutputTokens: 4096,
     messages: [
       {
         role: "user",
@@ -83,16 +84,38 @@ async function executeLLMStream(
     onFinish: async ({ text }) => {
       try {
         const { relatedWords, cleanMarkdown } = extractRelatedWords(text);
-        const extractedWord = extractWordFromMarkdown(cleanMarkdown, userWord);
 
-        if (extractedWord) {
-          await prisma.concept.update({
-            where: { word: extractedWord },
-            data: {
+        if (targetWord) {
+          // 始终以用户输入的词为主键更新，确保与预保存记录一致
+          await prisma.concept.upsert({
+            where: { word: targetWord },
+            create: {
+              word: targetWord,
+              fullMarkdown: cleanMarkdown,
+              relatedWords,
+            },
+            update: {
               fullMarkdown: cleanMarkdown,
               relatedWords,
             },
           });
+        } else {
+          // 兜底：无预设词时（极端情况），从 LLM 标题提取并新建
+          const extractedWord = extractWordFromMarkdown(cleanMarkdown, "");
+          if (extractedWord) {
+            await prisma.concept.upsert({
+              where: { word: extractedWord },
+              create: {
+                word: extractedWord,
+                fullMarkdown: cleanMarkdown,
+                relatedWords,
+              },
+              update: {
+                fullMarkdown: cleanMarkdown,
+                relatedWords,
+              },
+            });
+          }
         }
       } catch (dbError) {
         console.error("后台异步持久化入库失败:", dbError);
@@ -109,20 +132,22 @@ export async function POST(req: Request) {
     // useCompletion 的 complete() 发送 prompt 字段，前端直接 fetch 发送 word 字段
     const word = body.word ?? body.prompt ?? "";
     const checkOnly = body.checkOnly ?? false;
+    const force = body.force ?? false;
 
     // ── 1. 缓存优先 ──────────────────────────────────
-    if (word) {
+    // force 模式跳过缓存；不完整概念（fullMarkdown 为空或过短）视为未命中，自动重新生成
+    if (word && !force) {
       const cachedConcept = await prisma.concept.findUnique({
         where: { word },
         include: { note: true },
       });
-      if (cachedConcept) {
+      if (cachedConcept && cachedConcept.fullMarkdown && cachedConcept.fullMarkdown.length > 50) {
         return Response.json({ mode: "cache", data: cachedConcept });
       }
     }
 
-    // 仅缓存检查模式，不触发 LLM
-    if (checkOnly) {
+    // 仅缓存检查模式，不触发 LLM（force 模式下也跳过 checkOnly 短路）
+    if (checkOnly && !force) {
       return Response.json({ mode: "miss" });
     }
 

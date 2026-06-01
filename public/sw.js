@@ -1,9 +1,8 @@
 // 思维沙盘 Service Worker
-const CACHE_NAME = "cognitive-sandbox-v1";
+const CACHE_NAME = "cognitive-sandbox-v2";
 
-// 需要缓存的静态资源
+// 预缓存的静态资源（不包含 /，HTML 走网络优先策略）
 const PRECACHE_URLS = [
-  "/",
   "/manifest.json",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
@@ -31,16 +30,36 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// 请求拦截：缓存优先，API 请求走网络
+// 请求拦截
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
 
-  // API 请求：网络优先
+  // API 请求：仅走网络
   if (url.pathname.startsWith("/api/")) {
     return;
   }
 
-  // 静态资源：缓存优先
+  // HTML 导航请求：网络优先 → 缓存回退（确保每次都能拿到最新版本）
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => {
+              cache.put(event.request, clone);
+            });
+          }
+          return response;
+        })
+        .catch(() => {
+          return caches.match(event.request);
+        })
+    );
+    return;
+  }
+
+  // 静态资源（JS/CSS/图片）：缓存优先 → 网络回退
   event.respondWith(
     caches.match(event.request).then((cached) => {
       return (

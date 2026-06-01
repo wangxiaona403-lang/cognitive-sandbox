@@ -33,6 +33,7 @@ export default function MobileMindGym() {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [showSeedPanel, setShowSeedPanel] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
   const pendingWordRef = useRef<string>("");
   const debouncedSaveRef = useRef<ReturnType<typeof debounce> | null>(null);
 
@@ -99,26 +100,65 @@ export default function MobileMindGym() {
     [complete, setCompletion]
   );
 
+  // 强制重新生成（跳过缓存，手动读取流式响应）
+  const handleRegenerate = useCallback(async () => {
+    const word = currentConcept?.word;
+    if (!word || isLoading || isRegenerating) return;
+
+    setIsDrawerOpen(false);
+    setNoteContent("");
+    setCurrentConcept(null);
+    setCompletion("");
+    setIsRegenerating(true);
+    pendingWordRef.current = word;
+
+    try {
+      const res = await fetch("/api/think", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word, force: true }),
+      });
+
+      if (!res.ok || !res.body) {
+        setIsRegenerating(false);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let accumulated = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        accumulated += decoder.decode(value, { stream: true });
+        setCompletion(accumulated);
+      }
+      // 刷新解码器缓冲区
+      accumulated += decoder.decode();
+      if (accumulated) setCompletion(accumulated);
+    } catch (err) {
+      console.error("重新生成失败:", err);
+    } finally {
+      setIsRegenerating(false);
+    }
+  }, [currentConcept, isLoading, isRegenerating, setCompletion]);
+
   // 冷启动
   useEffect(() => {
     handleFetchConcept();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 流式结束后从 API 获取真实概念 ID
+  // 流式结束后从 API 获取真实概念 ID（以用户输入词为主键查询）
   useEffect(() => {
-    if (!isLoading && completion && !currentConcept) {
-      const titleMatch = completion.match(/^#\s+(.+)$/m);
-      // 优先用 markdown 中的标题，其次用请求时传入的词
-      const extractedWord = titleMatch
-        ? titleMatch[1].trim()
-        : pendingWordRef.current;
-      if (extractedWord) {
-
+    if (!isLoading && !isRegenerating && completion && !currentConcept) {
+      const lookupWord = pendingWordRef.current;
+      if (lookupWord) {
         const fetchConcept = async (attempt: number) => {
           try {
             const res = await fetch(
-              `/api/concepts?word=${encodeURIComponent(extractedWord)}`
+              `/api/concepts?word=${encodeURIComponent(lookupWord)}`
             );
             if (res.ok) {
               const data = await res.json();
@@ -136,8 +176,8 @@ export default function MobileMindGym() {
             } else {
               // 兜底：使用临时 ID
               setCurrentConcept({
-                id: `temp:${extractedWord}`,
-                word: extractedWord,
+                id: `temp:${lookupWord}`,
+                word: lookupWord,
                 fullMarkdown: completion,
                 relatedWords: "",
               });
@@ -151,7 +191,7 @@ export default function MobileMindGym() {
         fetchConcept(0);
       }
     }
-  }, [isLoading, completion, currentConcept]);
+  }, [isLoading, isRegenerating, completion, currentConcept]);
 
   // 笔记变更 → 防抖保存
   const handleNoteChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -265,12 +305,31 @@ export default function MobileMindGym() {
 
         {completion && (
           <>
-            {/* 突出标题 */}
+            {/* 突出标题 + 重新生成按钮 */}
             {conceptTitle && (
               <div className="mb-6">
-                <h1 className="text-2xl font-bold text-amber-300 tracking-wide leading-tight">
-                  {conceptTitle}
-                </h1>
+                <div className="flex items-start justify-between gap-3">
+                  <h1 className="text-2xl font-bold text-amber-300 tracking-wide leading-tight">
+                    {conceptTitle}
+                  </h1>
+                  {(currentConcept || completion) && (
+                    <button
+                      onClick={handleRegenerate}
+                      disabled={isLoading || isRegenerating}
+                      className="text-xs px-2.5 py-1.5 rounded-full bg-zinc-800 border border-zinc-700 text-zinc-400 hover:text-amber-300 hover:border-amber-500/40 active:scale-95 transition disabled:opacity-40 shrink-0 mt-0.5"
+                    >
+                      {isRegenerating ? "生成中..." : "🔄 重新生成"}
+                    </button>
+                  )}
+                </div>
+                {/* 不完整概念警告 */}
+                {currentConcept &&
+                  (!currentConcept.fullMarkdown ||
+                    currentConcept.fullMarkdown.length < 100) && (
+                    <p className="mt-2 text-xs text-amber-500/70">
+                      ⚠️ 此内容可能未生成完整，建议点击「🔄 重新生成」
+                    </p>
+                  )}
                 <div className="mt-2 w-12 h-0.5 bg-amber-500/50 rounded-full" />
               </div>
             )}

@@ -68,7 +68,21 @@ export default function RootLayout({
               if ('serviceWorker' in navigator) {
                 window.addEventListener('load', function() {
                   navigator.serviceWorker.register('/sw.js').then(
-                    function(reg) { console.log('SW registered:', reg.scope); },
+                    function(reg) {
+                      console.log('SW registered:', reg.scope);
+                      // 检测到新版本 SW 时自动刷新页面
+                      reg.addEventListener('updatefound', function() {
+                        var newWorker = reg.installing;
+                        if (newWorker) {
+                          newWorker.addEventListener('statechange', function() {
+                            if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
+                              console.log('新版本已激活，自动刷新...');
+                              window.location.reload();
+                            }
+                          });
+                        }
+                      });
+                    },
                     function(err) { console.log('SW failed:', err); }
                   );
                 });
