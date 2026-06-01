@@ -64,15 +64,11 @@ async function executeLLMStream(
 ) {
   // 预先创建概念占位（确保即使在 onFinish 被跳过时也能保存）
   if (targetWord) {
-    try {
-      await prisma.concept.upsert({
-        where: { word: targetWord },
-        create: { word: targetWord, fullMarkdown: "", relatedWords: "" },
-        update: {},
-      });
-    } catch {
-      // 保存失败不阻塞流式响应
-    }
+    await prisma.concept.upsert({
+      where: { word: targetWord },
+      create: { word: targetWord, fullMarkdown: "", relatedWords: "" },
+      update: {},
+    });
   }
 
   const result = streamText({
