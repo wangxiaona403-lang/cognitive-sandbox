@@ -17,6 +17,10 @@ export const metadata: Metadata = {
   description:
     "打破信息茧房与认知惰性的全栈深度思考工具 — 通过高概念词汇的激发与解构，结合强制性的多维反问与行动指南，帮助用户打破认知惰性。",
   manifest: "/manifest.json",
+  icons: {
+    icon: "/icons/icon-192.png",
+    apple: "/icons/apple-touch-icon.png",
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
@@ -42,8 +46,36 @@ export default function RootLayout({
       lang="zh-CN"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
+      <head>
+        {/* iOS PWA 全屏 */}
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta
+          name="apple-mobile-web-app-status-bar-style"
+          content="black-translucent"
+        />
+        <meta name="apple-mobile-web-app-title" content="思维沙盘" />
+        <link
+          rel="apple-touch-icon"
+          href="/icons/apple-touch-icon.png"
+        />
+      </head>
       <body className="min-h-full flex flex-col bg-zinc-950 text-zinc-100">
         {children}
+        {/* Service Worker 注册 */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              if ('serviceWorker' in navigator) {
+                window.addEventListener('load', function() {
+                  navigator.serviceWorker.register('/sw.js').then(
+                    function(reg) { console.log('SW registered:', reg.scope); },
+                    function(err) { console.log('SW failed:', err); }
+                  );
+                });
+              }
+            `,
+          }}
+        />
       </body>
     </html>
   );
